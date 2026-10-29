@@ -1,10 +1,18 @@
 """Calculate heat and air-quality risk levels."""
 """Calculate heat-risk levels from cleaned weather data."""
 
+from math import isfinite
+
 
 def calculate_heat_risk(apparent_temperature_c):
     """Return a heat-risk level, score, and practical recommendation."""
-    temperature = float(apparent_temperature_c)
+    try:
+        temperature = float(apparent_temperature_c)
+    except (TypeError, ValueError) as error:
+        raise ValueError("Apparent temperature must be numeric.") from error
+
+    if not isfinite(temperature):
+        raise ValueError("Apparent temperature must be finite.")
 
     if temperature < 32:
         return {
