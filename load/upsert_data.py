@@ -5,10 +5,8 @@ from datetime import datetime
 
 from psycopg.types.json import Jsonb
 
-from load.database import get_db_connection
 
-
-def upsert_raw_weather_record(weather_record):
+def upsert_raw_weather_record(cursor, weather_record):
     """Save one raw weather record in PostgreSQL."""
     sql_query = """
         INSERT INTO raw_weather_data (
@@ -33,15 +31,9 @@ def upsert_raw_weather_record(weather_record):
         Jsonb(weather_record["api_payload"]),
     )
 
-    with get_db_connection() as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(sql_query, values)
-            weather_record_id = cursor.fetchone()[0]
-
-        connection.commit()
-
-    return weather_record_id
-def upsert_raw_air_quality_record(location_id, measurement):
+    cursor.execute(sql_query, values)
+    return cursor.fetchone()[0]
+def upsert_raw_air_quality_record(cursor, location_id, measurement):
     """Save one raw OpenAQ measurement in PostgreSQL."""
     sql_query = """
         INSERT INTO raw_air_quality_data (
@@ -69,15 +61,9 @@ def upsert_raw_air_quality_record(location_id, measurement):
         Jsonb(measurement),
     )
 
-    with get_db_connection() as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(sql_query, values)
-            air_quality_record_id = cursor.fetchone()[0]
-
-        connection.commit()
-
-    return air_quality_record_id
-def upsert_air_quality_sensor(openaq_location_id, sensor):
+    cursor.execute(sql_query, values)
+    return cursor.fetchone()[0]
+def upsert_air_quality_sensor(cursor, openaq_location_id, sensor):
     """Save OpenAQ sensor metadata in PostgreSQL."""
     parameter = sensor["parameter"]
     sql_query = """
@@ -116,15 +102,9 @@ def upsert_air_quality_sensor(openaq_location_id, sensor):
         Jsonb(sensor),
     )
 
-    with get_db_connection() as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(sql_query, values)
-            sensor_id = cursor.fetchone()[0]
-
-        connection.commit()
-
-    return sensor_id
-def upsert_staging_weather_record(clean_weather_record):
+    cursor.execute(sql_query, values)
+    return cursor.fetchone()[0]
+def upsert_staging_weather_record(cursor, clean_weather_record):
     """Save one cleaned weather record in the staging table."""
     sql_query = """
         INSERT INTO stg_weather (
@@ -160,15 +140,40 @@ def upsert_staging_weather_record(clean_weather_record):
         clean_weather_record["wind_speed_kmh"],
     )
 
-    with get_db_connection() as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(sql_query, values)
-            weather_id = cursor.fetchone()[0]
+    cursor.execute(sql_query, values)
+    return cursor.fetchone()[0]
+def upsert_staging_air_quality_record(cursor, clean_record):
+    """Save one cleaned air-quality record in the staging table."""
+    sql_query = """
+        INSERT INTO stg_air_quality (
+            raw_air_quality_record_id,
+            location_id,
+            sensor_id,
+            observed_at,
+            measurement_value
+        )
+        VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT (raw_air_quality_record_id)
+        DO UPDATE SET
+            location_id = EXCLUDED.location_id,
+            sensor_id = EXCLUDED.sensor_id,
+            observed_at = EXCLUDED.observed_at,
+            measurement_value = EXCLUDED.measurement_value,
+            cleaned_at = NOW()
+        RETURNING air_quality_id;
+    """
 
-        connection.commit()
+    values = (
+        clean_record["raw_air_quality_record_id"],
+        clean_record["location_id"],
+        clean_record["sensor_id"],
+        clean_record["observed_at"],
+        clean_record["measurement_value"],
+    )
 
-    return weather_id
-def upsert_risk_assessment(weather_id, location_id, risk_result):
+    cursor.execute(sql_query, values)
+    return cursor.fetchone()[0]
+def upsert_risk_assessment(cursor, weather_id, location_id, risk_result):
     """Save one calculated heat-risk assessment."""
     sql_query = """
         INSERT INTO fact_risk_assessments (
@@ -196,11 +201,5 @@ def upsert_risk_assessment(weather_id, location_id, risk_result):
         risk_result["recommendation"],
     )
 
-    with get_db_connection() as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(sql_query, values)
-            risk_assessment_id = cursor.fetchone()[0]
-
-        connection.commit()
-
-    return risk_assessment_id
+    cursor.execute(sql_query, values)
+    return cursor.fetchone()[0]

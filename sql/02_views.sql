@@ -43,7 +43,8 @@ SELECT
     sensor.unit,
     measurement.observed_at,
     measurement.fetched_at,
-    sensor.sensor_id IS NOT NULL AS metadata_found
+    sensor.sensor_id IS NOT NULL AS metadata_found,
+    measurement.location_id
 FROM raw_air_quality_data AS measurement
 JOIN dim_locations AS location
     ON measurement.location_id = location.location_id

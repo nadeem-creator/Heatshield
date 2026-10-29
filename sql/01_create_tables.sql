@@ -64,6 +64,17 @@ CREATE TABLE IF NOT EXISTS stg_weather (
     wind_speed_kmh NUMERIC(6, 2) NOT NULL,
     cleaned_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+CREATE TABLE IF NOT EXISTS stg_air_quality (
+    air_quality_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    raw_air_quality_record_id BIGINT NOT NULL UNIQUE
+        REFERENCES raw_air_quality_data(air_quality_record_id),
+    location_id BIGINT NOT NULL REFERENCES dim_locations(location_id),
+    sensor_id BIGINT NOT NULL
+        REFERENCES dim_air_quality_sensors(sensor_id),
+    observed_at TIMESTAMPTZ NOT NULL,
+    measurement_value NUMERIC(12, 4) NOT NULL,
+    cleaned_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 CREATE TABLE IF NOT EXISTS fact_risk_assessments (
     risk_assessment_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     weather_id BIGINT NOT NULL UNIQUE
