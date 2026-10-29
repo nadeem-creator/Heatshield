@@ -1,8 +1,10 @@
 """Orchestrate the end-to-end data pipeline."""
 """Run the HeatShield Punjab data pipeline."""
 
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+
 import requests
 from config.cities import OPENAQ_LOCATION_IDS
 from extract.air_quality_api import (
@@ -19,12 +21,16 @@ from load.upsert_data import (
     upsert_staging_air_quality_record,
     upsert_staging_weather_record,
 )
+from pipeline.logging_config import configure_logging
 from transform.clean_air_quality import clean_air_quality_record
 from transform.clean_weather import (
     clean_weather_record,
     prepare_raw_weather_record,
 )
 from transform.calculate_risk import calculate_heat_risk
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 def setup_database():
@@ -39,7 +45,7 @@ def setup_database():
 
         connection.commit()
 
-    print("Database setup completed successfully.")
+    LOGGER.info("Database setup completed successfully")
 def get_active_locations():
     """Return all active project locations from PostgreSQL."""
     sql_query = """
@@ -73,6 +79,7 @@ def load_weather_for_all_locations():
     """Fetch and save current weather for every active city."""
     locations = get_active_locations()
     weather_records = []
+    failed_cities = []
 
     if not locations:
         return
@@ -88,10 +95,11 @@ def load_weather_for_all_locations():
             try:
                 weather_records.append(future.result())
             except requests.RequestException as error:
-                print(f"{city_name} weather could not be fetched: {error}")
+                failed_cities.append(city_name)
+                LOGGER.error("%s weather could not be fetched: %s", city_name, error)
 
     if not weather_records:
-        return
+        raise RuntimeError("Weather extraction failed for all active cities.")
 
     saved_records = []
     with get_db_connection() as connection:
@@ -101,7 +109,17 @@ def load_weather_for_all_locations():
                 saved_records.append((city_name, weather_record_id))
 
     for city_name, weather_record_id in saved_records:
-        print(f"{city_name} weather saved. Record ID: {weather_record_id}")
+        LOGGER.info(
+            "%s weather saved with record ID %s",
+            city_name,
+            weather_record_id,
+        )
+
+    if failed_cities:
+        LOGGER.warning(
+            "Weather extraction completed with failures for: %s",
+            ", ".join(sorted(failed_cities)),
+        )
 def get_raw_weather_records():
     """Read raw weather records that have not been cleaned."""
     sql_query = """
@@ -136,14 +154,20 @@ def load_air_quality_for_all_locations():
     """Fetch and save current air quality for every active city."""
     locations = get_active_locations()
     air_quality_batches = []
+    configured_city_count = 0
+    failed_cities = []
 
     for location_id, city_name, _latitude, _longitude in locations:
         openaq_location_id = OPENAQ_LOCATION_IDS.get(city_name)
 
         if openaq_location_id is None:
-            print(f"{city_name} air quality skipped: no verified OpenAQ location.")
+            LOGGER.warning(
+                "%s air quality skipped: no verified OpenAQ location",
+                city_name,
+            )
             continue
 
+        configured_city_count += 1
         try:
             measurement_response = fetch_latest_measurements(openaq_location_id)
             sensor_response = fetch_sensors_for_location(openaq_location_id)
@@ -154,9 +178,18 @@ def load_air_quality_for_all_locations():
                 (location_id, city_name, openaq_location_id, measurements, sensors)
             )
         except requests.RequestException as error:
-            print(f"{city_name} air quality could not be fetched: {error}")
+            failed_cities.append(city_name)
+            LOGGER.error(
+                "%s air quality could not be fetched: %s",
+                city_name,
+                error,
+            )
 
     if not air_quality_batches:
+        if configured_city_count:
+            raise RuntimeError(
+                "Air-quality extraction failed for all configured cities."
+            )
         return
 
     with get_db_connection() as connection:
@@ -169,9 +202,17 @@ def load_air_quality_for_all_locations():
                     upsert_raw_air_quality_record(cursor, location_id, measurement)
 
     for _, city_name, _, measurements, sensors in air_quality_batches:
-        print(
-            f"{city_name} air quality saved: {len(measurements)} measurements, "
-            f"{len(sensors)} sensors."
+        LOGGER.info(
+            "%s air quality saved: %s measurements, %s sensors",
+            city_name,
+            len(measurements),
+            len(sensors),
+        )
+
+    if failed_cities:
+        LOGGER.warning(
+            "Air-quality extraction completed with failures for: %s",
+            ", ".join(sorted(failed_cities)),
         )
 
 def get_raw_air_quality_records():
@@ -222,9 +263,10 @@ def transform_raw_air_quality_to_staging():
         try:
             clean_records.append(clean_air_quality_record(raw_record))
         except ValueError as error:
-            print(
-                f"Raw air-quality record {raw_record['air_quality_record_id']} "
-                f"rejected: {error}"
+            LOGGER.warning(
+                "Raw air-quality record %s rejected: %s",
+                raw_record["air_quality_record_id"],
+                error,
             )
 
     if not clean_records:
@@ -242,9 +284,10 @@ def transform_raw_air_quality_to_staging():
                 )
 
     for raw_record_id, air_quality_id in saved_records:
-        print(
-            f"Raw air-quality record {raw_record_id} "
-            f"cleaned and saved as staging record {air_quality_id}"
+        LOGGER.info(
+            "Raw air-quality record %s cleaned and saved as staging record %s",
+            raw_record_id,
+            air_quality_id,
         )
 
 def transform_raw_weather_to_staging():
@@ -267,9 +310,10 @@ def transform_raw_weather_to_staging():
                 saved_records.append((raw_weather_record["weather_record_id"], weather_id))
 
     for raw_weather_record_id, weather_id in saved_records:
-        print(
-            f"Raw record {raw_weather_record_id} "
-            f"cleaned and saved as staging record {weather_id}"
+        LOGGER.info(
+            "Raw weather record %s cleaned and saved as staging record %s",
+            raw_weather_record_id,
+            weather_id,
         )
 def get_staging_weather_records():
     """Read cleaned weather records ready for risk calculation."""
@@ -327,13 +371,19 @@ def calculate_and_load_heat_risks():
                 )
 
     for weather_id, risk_assessment_id, risk_result in saved_risks:
-        print(
-            f"Weather record {weather_id} "
-            f"saved as risk assessment {risk_assessment_id}: "
-            f"{risk_result['heat_risk_level']}"
+        LOGGER.info(
+            "Weather record %s saved as risk assessment %s: %s",
+            weather_id,
+            risk_assessment_id,
+            risk_result["heat_risk_level"],
         )
 
-if __name__ == "__main__":
+
+def main():
+    """Run the complete pipeline and return a process exit status."""
+    configure_logging()
+    LOGGER.info("Pipeline started")
+
     try:
         setup_database()
 
@@ -347,5 +397,13 @@ if __name__ == "__main__":
         transform_raw_weather_to_staging()
         transform_raw_air_quality_to_staging()
         calculate_and_load_heat_risks()
-    except Exception as error:
-        print(f"Pipeline failed: {error}")
+    except Exception:
+        LOGGER.exception("Pipeline failed")
+        return 1
+
+    LOGGER.info("Pipeline completed successfully")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
