@@ -44,9 +44,50 @@ SELECT
     measurement.observed_at,
     measurement.fetched_at,
     sensor.sensor_id IS NOT NULL AS metadata_found,
-    measurement.location_id
+    measurement.location_id,
+    CURRENT_TIMESTAMP - measurement.observed_at AS measurement_age,
+    CASE
+        WHEN measurement.observed_at >= CURRENT_TIMESTAMP - INTERVAL '24 hours'
+            THEN 'fresh'
+        ELSE 'stale'
+    END AS freshness_status
 FROM raw_air_quality_data AS measurement
 JOIN dim_locations AS location
     ON measurement.location_id = location.location_id
 LEFT JOIN dim_air_quality_sensors AS sensor
     ON measurement.sensor_id = sensor.sensor_id;
+
+CREATE OR REPLACE VIEW vw_latest_air_quality AS
+WITH ranked_air_quality AS (
+    SELECT
+        air.*,
+        ROW_NUMBER() OVER (
+            PARTITION BY air.location_id, air.sensor_id
+            ORDER BY air.observed_at DESC, air.air_quality_id DESC
+        ) AS row_number
+    FROM stg_air_quality AS air
+)
+SELECT
+    location.city_name,
+    location.province,
+    sensor.openaq_location_id,
+    air.sensor_id,
+    sensor.sensor_name,
+    sensor.parameter_id,
+    sensor.parameter_name,
+    sensor.parameter_display_name,
+    air.measurement_value,
+    sensor.unit,
+    air.observed_at,
+    CURRENT_TIMESTAMP - air.observed_at AS measurement_age,
+    CASE
+        WHEN air.observed_at >= CURRENT_TIMESTAMP - INTERVAL '24 hours'
+            THEN 'fresh'
+        ELSE 'stale'
+    END AS freshness_status
+FROM ranked_air_quality AS air
+JOIN dim_locations AS location
+    ON air.location_id = location.location_id
+JOIN dim_air_quality_sensors AS sensor
+    ON air.sensor_id = sensor.sensor_id
+WHERE air.row_number = 1;
