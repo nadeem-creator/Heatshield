@@ -1,0 +1,21 @@
+services:
+  pipeline:
+    build: .
+    command: python -m pipeline.run_pipeline
+    env_file:
+      - .env
+    volumes:
+      - ./logs:/app/logs
+
+  dashboard:
+    build: .
+    command:
+      - streamlit
+      - run
+      - dashboard/app.py
+      - --server.address=0.0.0.0
+      - --server.port=8501
+    env_file:
+      - .env
+    ports:
+      - "8501:8501"
