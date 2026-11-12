@@ -1,7 +1,11 @@
 """Manage PostgreSQL database access."""
 import os
+import socket
+
 import psycopg
 from dotenv import load_dotenv
+from psycopg.conninfo import conninfo_to_dict
+
 
 def get_db_connection():
     load_dotenv()
@@ -10,7 +14,10 @@ def get_db_connection():
     if not database_url:
         raise ValueError("DATABASE_URL is missing. Add it to your .env file.")
 
-    return psycopg.connect(database_url)
+    hostname = conninfo_to_dict(database_url).get("host")
+    hostaddr = socket.gethostbyname(hostname) if hostname else None
+    return psycopg.connect(database_url, hostaddr=hostaddr)
+
 
 if __name__ == "__main__":
     try:
